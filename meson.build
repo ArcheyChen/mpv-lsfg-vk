@@ -240,6 +240,9 @@ sources = files(
     'video/out/gpu/utils.c',
     'video/out/gpu/video.c',
     'video/out/gpu/video_shaders.c',
+    'video/out/lsfg/lsfg.c',
+    'video/out/lsfg/lsfg_dll.c',
+    'video/out/lsfg/lsfg_mpv_adapter.c',
     'video/out/libmpv_sw.c',
     'video/out/vo.c',
     'video/out/vo_gpu.c',
@@ -1025,8 +1028,7 @@ if features['posix']
     features += {'posix-shm': cc.has_function('shm_open', prefix: '#include <sys/mman.h>')}
 endif
 
-spirv_cross = dependency('spirv-cross-c-shared', required:
-    get_option('spirv-cross').require(features['win32-desktop']))
+spirv_cross = dependency('spirv-cross-c-shared', required: get_option('spirv-cross'))
 features += {'spirv-cross': spirv_cross.found()}
 if features['spirv-cross']
     dependencies += spirv_cross
@@ -1743,6 +1745,8 @@ endif
 conf_data = configuration_data()
 conf_data.set_quoted('CONFIGURATION', meson.build_options())
 conf_data.set_quoted('DEFAULT_OPTICAL_DEVICE', optical_device)
+conf_data.set_quoted('MPV_LSFG_SHADER_DIR',
+    join_paths(source_root, 'video', 'out', 'lsfg', 'shaders', 'fullflow_autogen', 'src'))
 
 # Loop over all features in the build, create a define and add them to config.h
 feature_keys = []

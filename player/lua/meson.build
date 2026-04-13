@@ -10,3 +10,6 @@ foreach file: lua_files
     )
     sources += lua_file
 endforeach
+
+install_data('lsfg.lua',
+    install_dir: join_paths(get_option('sysconfdir'), 'mpv', 'scripts'))

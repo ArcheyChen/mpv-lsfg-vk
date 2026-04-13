@@ -3018,6 +3018,55 @@ static int mp_property_vo_passes(void *ctx, struct m_property *prop,
     return M_PROPERTY_OK;
 }
 
+static int mp_property_lsfg_stats(void *ctx, struct m_property *prop,
+                                  int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (!mpctx->video_out)
+        return M_PROPERTY_UNAVAILABLE;
+
+    switch (action) {
+    case M_PROPERTY_PRINT:
+    case M_PROPERTY_GET:
+        break;
+    case M_PROPERTY_GET_TYPE:
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    default:
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    }
+
+    struct voctrl_lsfg_stats stats = {0};
+    if (vo_control(mpctx->video_out, VOCTRL_GET_LSFG_STATS, &stats) <= 0)
+        return M_PROPERTY_UNAVAILABLE;
+
+    switch (action) {
+    case M_PROPERTY_PRINT: {
+        double ratio = stats.total ? (100.0 * (double)stats.interpolated / (double)stats.total) : 0.0;
+        *(char **)arg = talloc_asprintf(NULL,
+                                        "total=%"PRIu64" interpolated=%"PRIu64" real=%"PRIu64
+                                        " fallback=%"PRIu64" interp-ratio=%.1f%%",
+                                        stats.total, stats.interpolated, stats.real,
+                                        stats.fallback, ratio);
+        break;
+    }
+    case M_PROPERTY_GET: {
+        struct mpv_node node;
+        node_init(&node, MPV_FORMAT_NODE_MAP, NULL);
+        node_map_add_int64(&node, "total", stats.total);
+        node_map_add_int64(&node, "interpolated", stats.interpolated);
+        node_map_add_int64(&node, "real", stats.real);
+        node_map_add_int64(&node, "fallback", stats.fallback);
+        double ratio = stats.total ? ((double)stats.interpolated / (double)stats.total) : 0.0;
+        node_map_add_double(&node, "interp_ratio", ratio);
+        *(struct mpv_node *)arg = node;
+        break;
+    }
+    }
+
+    return M_PROPERTY_OK;
+}
+
 static int mp_property_perf_info(void *ctx, struct m_property *p, int action,
                                  void *arg)
 {
@@ -4561,6 +4610,7 @@ static const struct m_property mp_properties_base[] = {
     {"current-window-scale", mp_property_current_window_scale},
     {"vo-configured", mp_property_vo_configured},
     {"vo-passes", mp_property_vo_passes},
+    {"lsfg-stats", mp_property_lsfg_stats},
     {"perf-info", mp_property_perf_info},
     {"current-vo", mp_property_vo},
     {"current-gpu-context", mp_property_gpu_context},

@@ -84,6 +84,7 @@ enum mp_voctrl {
     VOCTRL_UPDATE_PLAYBACK_STATE,       // struct voctrl_playback_state*
 
     VOCTRL_PERFORMANCE_DATA,            // struct voctrl_performance_data*
+    VOCTRL_GET_LSFG_STATS,              // struct voctrl_lsfg_stats*
 
     VOCTRL_SET_CURSOR_VISIBILITY,       // bool*
 
@@ -177,6 +178,13 @@ struct mp_frame_perf {
 
 struct voctrl_performance_data {
     struct mp_frame_perf fresh, redraw;
+};
+
+struct voctrl_lsfg_stats {
+    uint64_t total;
+    uint64_t interpolated;
+    uint64_t real;
+    uint64_t fallback;
 };
 
 struct voctrl_screenshot {

@@ -50,6 +50,7 @@
 #include "gpu/video_shaders.h"
 #include "sub/osd.h"
 #include "gpu_next/context.h"
+#include "video/out/lsfg/lsfg_mpv_adapter.h"
 
 #if HAVE_GL && defined(PL_HAVE_OPENGL)
 #include <libplacebo/opengl.h>
@@ -165,6 +166,7 @@ struct priv {
     struct frame_info perf_redraw;
 
     struct mp_image_params target_params;
+    struct mpv_lsfg_adapter *lsfg;
 };
 
 static void update_render_options(struct vo *vo);
@@ -184,6 +186,13 @@ struct gl_next_opts {
     int target_hint;
     int target_hint_mode;
     bool target_hint_strict;
+    bool lsfg_enable;
+    bool lsfg_strict;
+    int lsfg_multiplier;
+    float lsfg_flow_scale;
+    int lsfg_performance_mode;
+    int lsfg_processing_res;
+    char *lsfg_dll_path;
     char **raw_opts;
 };
 
@@ -219,6 +228,15 @@ const struct m_sub_options gl_next_conf = {
         {"target-colorspace-hint", OPT_CHOICE(target_hint, {"auto", -1}, {"no", 0}, {"yes", 1})},
         {"target-colorspace-hint-mode", OPT_CHOICE(target_hint_mode, {"target", 0}, {"source", 1}, {"source-dynamic", 2})},
         {"target-colorspace-hint-strict", OPT_BOOL(target_hint_strict)},
+        {"lsfg-enable", OPT_BOOL(lsfg_enable)},
+        {"lsfg-strict", OPT_BOOL(lsfg_strict)},
+        {"lsfg-multiplier", OPT_CHOICE(lsfg_multiplier, {"2", 2}, {"3", 3}, {"4", 4})},
+        {"lsfg-flow-scale", OPT_FLOAT(lsfg_flow_scale), M_RANGE(0.25, 1.0)},
+        {"lsfg-performance-mode", OPT_CHOICE(lsfg_performance_mode,
+            {"quality", 0}, {"performance", 1})},
+        {"lsfg-processing-res", OPT_CHOICE(lsfg_processing_res,
+            {"video", 0}, {"display", 1})},
+        {"lsfg-dll-path", OPT_STRING(lsfg_dll_path)},
         // No `target-lut-type` because we don't support non-RGB targets
         {"libplacebo-opts", OPT_KEYVALUELIST(raw_opts)},
         {0},
@@ -231,6 +249,10 @@ const struct m_sub_options gl_next_conf = {
         .image_subs_hdr_peak = PL_COLOR_SDR_WHITE,
         .target_hint = -1,
         .target_hint_strict = true,
+        .lsfg_strict = true,
+        .lsfg_multiplier = 2,
+        .lsfg_flow_scale = 1.0,
+        .lsfg_processing_res = 0,
     },
     .size = sizeof(struct gl_next_opts),
     .change_flags = UPDATE_VIDEO,
@@ -889,6 +911,18 @@ static void update_options(struct vo *vo)
 
     for (char **kv = p->next_opts->raw_opts; kv && kv[0]; kv += 2)
         pl_options_set_str(pars, kv[0], kv[1]);
+
+    if (p->lsfg) {
+        const struct mpv_lsfg_opts lsfg_opts = {
+            .enable = p->next_opts->lsfg_enable,
+            .strict = p->next_opts->lsfg_strict,
+            .multiplier = p->next_opts->lsfg_multiplier,
+            .flow_scale = p->next_opts->lsfg_flow_scale,
+            .performance_mode = p->next_opts->lsfg_performance_mode,
+            .dll_path = p->next_opts->lsfg_dll_path,
+        };
+        mpv_lsfg_adapter_update_opts(p->lsfg, &lsfg_opts);
+    }
 }
 
 static void apply_target_contrast(struct priv *p, struct pl_color_space *color, float min_luma)
@@ -1051,11 +1085,20 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
     struct pl_render_params params = pars->params;
     const struct gl_video_opts *opts = p->opts_cache->opts;
+    struct mpv_lsfg_runtime lsfg_runtime = {0};
     bool will_redraw = frame->display_synced && frame->num_vsyncs > 1;
     bool cache_frame = will_redraw || frame->still;
     bool can_interpolate = opts->interpolation && frame->display_synced &&
-                           !frame->still && frame->num_frames > 1;
-    double pts_offset = can_interpolate ? frame->ideal_frame_vsync : 0;
+                           !frame->still && frame->num_frames > 1 &&
+                           !p->next_opts->lsfg_enable;
+    bool keep_queue_history = (opts->interpolation || p->next_opts->lsfg_enable) &&
+                              frame->display_synced && !frame->still &&
+                              frame->num_frames > 1;
+    bool lsfg_queue_phase = p->next_opts->lsfg_enable &&
+                            frame->display_synced && !frame->still;
+
+    double pts_offset = (can_interpolate || lsfg_queue_phase)
+                      ? frame->ideal_frame_vsync : 0;
     params.info_callback = info_callback;
     params.info_priv = vo;
     params.skip_caching_single_frame = !cache_frame;
@@ -1114,7 +1157,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
         pl_queue_push(p->queue, &(struct pl_source_frame) {
             .pts = mpi->pts,
-            .duration = can_interpolate ? frame->approx_duration : 0,
+            .duration = keep_queue_history ? frame->approx_duration : 0,
             .frame_data = mpi,
             .map = map_frame,
             .unmap = unmap_frame,
@@ -1263,7 +1306,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
             struct pl_queue_params qparams = *pl_queue_params(
                 .pts = frame->current->pts + pts_offset,
                 .radius = pl_frame_mix_radius(&params),
-                .vsync_duration = can_interpolate ? frame->ideal_frame_vsync_duration : 0,
+                .vsync_duration = keep_queue_history ? frame->ideal_frame_vsync_duration : 0,
                 .drift_compensation = 0,
             );
             pl_queue_update(p->queue, NULL, &qparams);
@@ -1273,6 +1316,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
     bool valid = false;
     p->is_interpolated = false;
+    bool lsfg_fallback_used = false;
 
     // Calculate target
     struct pl_frame target;
@@ -1344,7 +1388,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         struct pl_queue_params qparams = *pl_queue_params(
             .pts = frame->current->pts + pts_offset,
             .radius = pl_frame_mix_radius(&params),
-            .vsync_duration = can_interpolate ? frame->ideal_frame_vsync_duration : 0,
+            .vsync_duration = keep_queue_history ? frame->ideal_frame_vsync_duration : 0,
             .interpolation_threshold = opts->interpolation_threshold,
             .drift_compensation = 0,
         );
@@ -1372,9 +1416,23 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
             // This is expected to happen semi-frequently near the start and
             // end of a file, so only log it at high verbosity and move on.
             MP_DBG(vo, "Render queue underrun.\n");
+            mpv_lsfg_adapter_soft_reset(p->lsfg);
             break;
         case PL_QUEUE_OK:
             break;
+        }
+
+        if (p->lsfg) {
+            const struct mpv_lsfg_frame_info info = {
+                .display_synced = frame->display_synced,
+                .still = frame->still,
+                .has_current = frame->current,
+                .pending_reset = p->want_reset,
+                .queue_more = mix.num_frames == 0,
+                .pts_monotonic = true,
+                .num_frames = frame->num_frames,
+            };
+            mpv_lsfg_adapter_begin_frame(p->lsfg, &info, &lsfg_runtime);
         }
 
         // Update source crop and overlays on all existing frames. We
@@ -1435,15 +1493,42 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
     // Render frame
     stats_time_start(p->stats, "render");
-    bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
-    stats_time_end(p->stats, "render");
-    if (!render_ok) {
-        MP_ERR(vo, "Failed rendering frame!\n");
-        goto done;
+    bool lsfg_path = false;
+    if (p->lsfg) {
+        struct mpv_lsfg_render_params lsfg_params = {
+            .vo = vo,
+            .gpu = gpu,
+            .rr = p->rr,
+            .frame = frame,
+            .mix = &mix,
+            .target = &target,
+            .render_params = &params,
+            .swap_tex = swframe.fbo,
+            .runtime = &lsfg_runtime,
+            .strict = p->next_opts->lsfg_strict,
+            .processing_res = p->next_opts->lsfg_processing_res,
+        };
+        lsfg_path = mpv_lsfg_adapter_render(p->lsfg, &lsfg_params, &p->is_interpolated);
     }
 
-    struct pl_frame ref_frame;
-    pl_frames_infer_mix(p->rr, &mix, &target, &ref_frame);
+    if (!lsfg_path) {
+        lsfg_fallback_used = true;
+        bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
+        if (!render_ok) {
+            MP_ERR(vo, "Failed rendering frame!\n");
+            goto done;
+        }
+
+        p->is_interpolated = pts_offset != 0 && mix.num_frames > 1;
+        valid = true;
+    } else {
+        valid = true;
+    }
+
+    mpv_lsfg_adapter_record_frame(p->lsfg, valid && p->next_opts->lsfg_enable,
+                                  p->is_interpolated, lsfg_fallback_used);
+
+    stats_time_end(p->stats, "render");
 
     mp_mutex_lock(&vo->params_mutex);
     p->target_params = (struct mp_image_params){
@@ -1462,9 +1547,6 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &vo->params->color.hdr);
     }
     mp_mutex_unlock(&vo->params_mutex);
-
-    p->is_interpolated = pts_offset != 0 && mix.num_frames > 1;
-    valid = true;
     // fall through
 
 done:
@@ -1540,6 +1622,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
         return -1;
 
     resize(vo);
+    mpv_lsfg_adapter_on_reconfig(p->lsfg, p->gpu);
     mp_mutex_lock(&vo->params_mutex);
     vo->target_params = NULL;
     mp_mutex_unlock(&vo->params_mutex);
@@ -1887,6 +1970,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
     case VOCTRL_RESET:
         // Defer until the first new frame (unique ID) actually arrives
         p->want_reset = true;
+        mpv_lsfg_adapter_on_reset(p->lsfg);
         return VO_TRUE;
 
     case VOCTRL_PERFORMANCE_DATA: {
@@ -1896,11 +1980,18 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return true;
     }
 
+    case VOCTRL_GET_LSFG_STATS: {
+        struct voctrl_lsfg_stats *stats = data;
+        mpv_lsfg_adapter_get_stats(p->lsfg, stats);
+        return true;
+    }
+
     case VOCTRL_SCREENSHOT:
         video_screenshot(vo, data);
         return true;
 
     case VOCTRL_EXTERNAL_RESIZE:
+        mpv_lsfg_adapter_on_reconfig(p->lsfg, p->gpu);
         reconfig(vo, NULL);
         return true;
 
@@ -2134,6 +2225,7 @@ done:
 static void uninit(struct vo *vo)
 {
     struct priv *p = vo->priv;
+    mpv_lsfg_adapter_destroy(&p->lsfg, p->gpu);
     pl_queue_destroy(&p->queue); // destroy this first
     for (int i = 0; i < MP_ARRAY_SIZE(p->osd_state.entries); i++)
         pl_tex_destroy(p->gpu, &p->osd_state.entries[i].tex);
@@ -2193,6 +2285,7 @@ static int preinit(struct vo *vo)
     p->video_eq = mp_csp_equalizer_create(p, vo->global);
     p->global = vo->global;
     p->log = vo->log;
+    p->lsfg = mpv_lsfg_adapter_create(p, vo->log);
     p->stats = stats_ctx_create(p, vo->global, "vo/gpu-next");
 
     struct gl_video_opts *gl_opts = p->opts_cache->opts;

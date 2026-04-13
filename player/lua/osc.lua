@@ -85,6 +85,10 @@ local user_opts = {
     menu_mbtn_mid_command = "",
     menu_mbtn_right_command = "",
 
+    lsfg_mbtn_left_command = "script-message-to lsfg menu-toggle",
+    lsfg_mbtn_mid_command = "script-message-to lsfg toggle",
+    lsfg_mbtn_right_command = "script-message-to lsfg status",
+
     playlist_prev_mbtn_left_command = "playlist-prev",
     playlist_prev_mbtn_mid_command = "show-text ${playlist} 3000",
     playlist_prev_mbtn_right_command = "script-binding select/select-playlist; script-message-to osc osc-hide",
@@ -1799,6 +1803,12 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.topButtonsBar
 
+    -- LSFG
+    geo = { x = geo.x + geo.w + padX, y = geo.y, an = geo.an, w = 44, h = geo.h }
+    lo = add_layout("lsfg")
+    lo.geometry = geo
+    lo.style = osc_styles.vidtitleBar
+
     -- Playlist prev/next
     geo = { x = geo.x + geo.w + padX, y = geo.y, an = geo.an, w = geo.w, h = geo.h }
     lo = add_layout("playlist_prev")
@@ -2122,6 +2132,12 @@ layouts["floating"] = function ()
     lo.style = osc_styles.floatingButtons
     ll = ll + btn_size + btn_pad
 
+    local lsfg_w = 42
+    lo = add_layout("lsfg")
+    lo.geometry = {x = ll, y = ctrl_pos, an = 4, w = lsfg_w, h = btn_size}
+    lo.style = osc_styles.vidtitleBar
+    ll = ll + lsfg_w + btn_pad
+
     lo = add_layout("playlist_prev")
     lo.geometry = {x = ll, y = ctrl_pos, an = 4, w = btn_size, h = btn_size}
     lo.style = osc_styles.floatingButtons
@@ -2266,6 +2282,11 @@ local function osc_init()
     ne = new_element("menu", "button")
     ne.content = icons.menu
     bind_mouse_buttons("menu")
+
+    -- lsfg quick menu
+    ne = new_element("lsfg", "button")
+    ne.content = "LSFG"
+    bind_mouse_buttons("lsfg")
 
     -- playlist buttons
 

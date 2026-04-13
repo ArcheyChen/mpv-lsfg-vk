@@ -6034,6 +6034,38 @@ them.
     to on. (Only affects ``--vo=gpu-next``, note that ``--vo=gpu`` always
     invalidates interpolated frames)
 
+``--lsfg-enable=<yes|no>``
+    Enable in-process LSFG frame generation on ``--vo=gpu-next``.
+    This path is Vulkan-only and expects compute-capable GPU support.
+
+``--lsfg-strict=<yes|no>``
+    Strict failure handling for LSFG (default: yes). If enabled, LSFG is
+    disabled immediately after a fatal generation error instead of silently
+    falling back for the failing frame.
+
+``--lsfg-multiplier=<2|3|4>``
+    Number of output frames per input frame pair target. ``2`` generates one
+    synthetic in-between frame, ``3`` generates two, and ``4`` generates three.
+
+``--lsfg-flow-scale=<0.25..1.0>``
+    Motion flow resolution scale used by LSFG internals. ``1.0`` keeps the
+    full flow resolution, lower values downscale flow estimation and reduce
+    GPU workload.
+
+``--lsfg-performance-mode=<quality|performance>``
+    LSFG model variant. ``quality`` uses wider intermediate features, while
+    ``performance`` reduces feature width to lower GPU cost.
+
+``--lsfg-processing-res=<video|display>``
+    Select LSFG processing resolution. ``video`` (default) runs LSFG at the
+    decoded video resolution and scales to the swapchain on presentation.
+    ``display`` runs LSFG at the final output resolution.
+
+``--lsfg-dll-path=<path>``
+    Override path to ``Lossless.dll`` used for runtime shader extraction.
+    If unset, mpv searches common Steam install locations and then
+    ``./Lossless.dll``.
+
 ``--opengl-pbo``
     Enable use of PBOs. On some drivers this can be faster, especially if the
     source video size is huge (e.g. so called "4K" video). On other drivers it
